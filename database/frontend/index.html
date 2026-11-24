@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>ShopCore Storefront</title>
+  <title>ShopCore Storefront (Live DB)</title>
   <style>
     * { box-sizing: border-box; font-family: Arial, sans-serif; }
     body { margin: 0; background: #f4f5f7; color: #1f2937; }
@@ -12,10 +12,13 @@
       display: flex; justify-content: space-between; align-items: center;
     }
     .container { max-width: 1000px; margin: 28px auto; padding: 0 16px; }
-    .toolbar { display: flex; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
+    .toolbar { display: flex; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; align-items: center; }
+    input, button {
+      padding: 10px 14px; border-radius: 6px; font-weight: 600;
+    }
+    input { border: 1px solid #d1d5db; background: #fff; font-weight: 400; }
     button {
-      background: #2563eb; color: #fff; border: none; padding: 10px 16px;
-      border-radius: 6px; cursor: pointer; font-weight: 600;
+      background: #2563eb; color: #fff; border: none; cursor: pointer;
     }
     button:hover { background: #1d4ed8; }
     button.secondary { background: #374151; }
@@ -42,31 +45,39 @@
 <body>
   <header>
     <h2>ShopCore Storefront</h2>
-    <span id="cartInfo">Orders Placed: 0</span>
+    <span id="orderStatus">PostgreSQL Live Sync</span>
   </header>
 
   <div class="container">
     <div class="toolbar">
-      <button onclick="renderProducts()">View Products</button>
+      <button onclick="loadProducts()">Refresh Products</button>
+      <input id="userIdInput" type="number" min="1" value="1" title="User ID" style="width: 90px;" placeholder="User ID" />
       <button class="secondary" onclick="addSampleProduct()">+ Add Sample Product</button>
     </div>
 
     <div id="productGrid" class="grid"></div>
 
-    <div class="log" id="activityLog">Ready. Click "Buy Now" on a product to test stock deduction.</div>
+    <div class="log" id="activityLog">Connecting to ShopCore API (http://localhost:8080)...</div>
   </div>
 
   <script>
-    let products = [
-      { id: 10, name: "Minimalist Analog Watch", category: "Accessories", price: 1599.00, stock: 12 },
-      { id: 1, name: "Daily Running Shoes", category: "Footwear", price: 1899.00, stock: 15 },
-      { id: 2, name: "Smart Casual Slip-On", category: "Footwear", price: 1499.00, stock: 18 },
-      { id: 3, name: "Commuter Backpack", category: "Bags", price: 1299.00, stock: 20 }
-    ];
-    let orderCount = 0;
+    const API_BASE = "http://localhost:8090/api";
+    let products = [];
 
     function logMsg(text) {
       document.getElementById("activityLog").textContent = text;
+    }
+
+    async function loadProducts() {
+      try {
+        const res = await fetch(`${API_BASE}/products`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        products = await res.json();
+        renderProducts();
+        logMsg(`Loaded ${products.length} products from PostgreSQL.`);
+      } catch (err) {
+        logMsg(`Failed to load products: ${err.message}. Make sure ApiServer is running on port 8080.`);
+      }
     }
 
     function renderProducts() {
@@ -77,48 +88,67 @@
         card.className = "card";
         card.innerHTML = `
           <div>
-            <span class="badge">${p.category}</span>
+            <span class="badge">${p.category || "General"}</span>
             <h3>#${p.id} ${p.name}</h3>
-            <div class="price">Rs. ${p.price.toFixed(2)}</div>
-            <div class="stock ${p.stock === 0 ? "out" : ""}">
+            <div class="price">Rs. ${Number(p.price).toFixed(2)}</div>
+            <div class="stock ${p.stock <= 0 ? "out" : ""}">
               ${p.stock > 0 ? "Stock: " + p.stock : "Out of Stock"}
             </div>
           </div>
-          <button ${p.stock === 0 ? "disabled" : ""} onclick="placeOrder(${p.id})">
-            ${p.stock === 0 ? "Blocked (No Stock)" : "Place Order"}
+          <button ${p.stock <= 0 ? "disabled" : ""} onclick="placeOrder(${p.id}, '${p.name.replace(/'/g, "\\'")}')">
+            ${p.stock <= 0 ? "Out of Stock" : "Place Order"}
           </button>
         `;
         grid.appendChild(card);
       });
     }
 
-    function placeOrder(id) {
-      const item = products.find((p) => p.id === id);
-      if (!item || item.stock <= 0) {
-        logMsg("Order blocked: insufficient stock.");
-        return;
+    async function placeOrder(productId, name) {
+      const userId = Number(document.getElementById("userIdInput").value || 1);
+      try {
+        const res = await fetch(`${API_BASE}/orders`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ userId, productId, qty: 1 })
+        });
+        const data = await res.json();
+        if (!res.ok || !data.ok) {
+          logMsg(`Order failed: ${data.message || data.error || "Unknown error"}`);
+          return;
+        }
+        logMsg(`Order confirmed in DB for "${name}" (User #${userId}). Refreshing stock...`);
+        await loadProducts();
+      } catch (err) {
+        logMsg(`Order request error: ${err.message}`);
       }
-      item.stock -= 1;
-      orderCount += 1;
-      document.getElementById("cartInfo").textContent = "Orders Placed: " + orderCount;
-      logMsg(`Order confirmed for "${item.name}". Remaining stock: ${item.stock}`);
-      renderProducts();
     }
 
-    function addSampleProduct() {
-      const nextId = products.length ? Math.max(...products.map(p => p.id)) + 1 : 1;
-      products.push({
-        id: nextId,
-        name: "Roadster Trail Cap",
-        category: "Accessories",
-        price: 499.00,
-        stock: 8
-      });
-      logMsg(`Added product #${nextId} (Roadster Trail Cap).`);
-      renderProducts();
+    async function addSampleProduct() {
+      try {
+        const res = await fetch(`${API_BASE}/products`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: "Roadster Trail Cap",
+            category: "Accessories",
+            price: 499.00,
+            stockQty: 8,
+            description: "Added from ShopCore Storefront"
+          })
+        });
+        const data = await res.json();
+        if (!res.ok || !data.ok) {
+          logMsg(`Add failed: ${data.message || data.error}`);
+          return;
+        }
+        logMsg("Added Roadster Trail Cap to PostgreSQL. Refreshing list...");
+        await loadProducts();
+      } catch (err) {
+        logMsg(`Add product error: ${err.message}`);
+      }
     }
 
-    renderProducts();
+    loadProducts();
   </script>
 </body>
 </html>
